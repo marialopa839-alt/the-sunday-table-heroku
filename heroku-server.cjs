@@ -3,6 +3,8 @@
 const { createServer } = require('node:http');
 const { createReadStream, promises: fs } = require('node:fs');
 const path = require('node:path');
+const { createJciTracking } = require('./scripts/jci-fingerprint.cjs');
+const tracking = createJciTracking();
 
 const publicRoot = path.resolve(__dirname, 'artifacts/recipe-publication/dist/public');
 const notFoundFile = path.join(publicRoot, '404.html');
@@ -66,16 +68,17 @@ async function resolveFile(pathname) {
 
 const server = createServer(async (req, res) => {
   const method = req.method || 'GET';
-  if (method !== 'GET' && method !== 'HEAD') {
-    res.setHeader('Allow', 'GET, HEAD');
-    return sendText(res, 405, 'Method not allowed.', method);
-  }
-
   let pathname;
   try {
     pathname = new URL(req.url || '/', 'http://localhost').pathname;
   } catch {
     return sendText(res, 400, 'Invalid request URL.', method);
+  }
+
+  if (await tracking.handle(req, res, pathname)) return;
+  if (method !== 'GET' && method !== 'HEAD') {
+    res.setHeader('Allow', 'GET, HEAD');
+    return sendText(res, 405, 'Method not allowed.', method);
   }
 
   let resolved;
@@ -100,6 +103,14 @@ const server = createServer(async (req, res) => {
       notFoundHtml = html.replace(/<\/head>/i, '<base href="/">\n</head>');
     } catch {
       notFoundHtml = 'Not found.\n';
+    }
+  }
+
+  if (!isNotFound && resolved.file === path.join(publicRoot, 'index.html') && tracking.ready) {
+    try {
+      notFoundHtml = tracking.inject(await fs.readFile(resolved.file, 'utf8'));
+    } catch {
+      return sendText(res, 500, 'Unable to read the requested file.', method);
     }
   }
 
